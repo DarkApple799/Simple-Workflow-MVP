@@ -1,0 +1,23 @@
+# ---- 两个子工程各自的 .gitignore 已经覆盖细节，这里只做仓库级兜底 ----
+
+# 密钥 / 本地配置
+.env
+*.env
+!.env.example
+
+# Homework 1 的会话与缓存
+.cra_sessions/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 运行产物
+.wfa/
+.tmp/
+.wfa_workspace/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

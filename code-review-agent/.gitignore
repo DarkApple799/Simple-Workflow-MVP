@@ -1,0 +1,30 @@
+# ---- 密钥与本地配置（绝对不能提交）----
+.env
+.env.local
+*.key
+
+# ---- 运行时产物 ----
+.cra_sessions/
+.tmp_run/
+code_review_report.md
+code_review_report.json
+*.log
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Code Review Agent · 代码审查</title>
+<style>
+  :root {
+    --bg: #0f1720; --panel: #16212c; --panel2: #1d2a37; --line: #26374a;
+    --text: #e6edf3; --muted: #93a4b5; --accent: #3ba7ff; --ok: #3ddc97;
+    --warn: #ffcc66; --err: #ff6b6b; --crit: #ff4d4f; --high: #ff8c42;
+    --med: #ffcc66; --low: #63c7ff; --info: #93a4b5;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+  header { padding: 18px 26px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: baseline; gap: 14px; background: var(--panel); }
+  header h1 { font-size: 19px; margin: 0; }
+  header .tag { color: var(--muted); font-size: 13px; }
+  main { padding: 22px 26px 60px; max-width: 1180px; margin: 0 auto; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+          padding: 16px 18px; margin-bottom: 18px; }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  input[type=text], input[type=number] {
+    background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 7px; padding: 9px 11px; font-size: 14px; min-width: 220px; }
+  input[type=number] { min-width: 90px; }
+  .checks { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+  .checks label { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--text);
+                  background: var(--panel2); border: 1px solid var(--line);
+                  padding: 6px 10px; border-radius: 20px; cursor: pointer; font-size: 13px; }
+  button { background: var(--accent); color: #04121f; border: 0; border-radius: 8px;
+           padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .55; cursor: progress; }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 10px; line-height: 1.7; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+  .metric { background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; padding: 12px 14px; }
+  .metric b { display: block; font-size: 22px; margin-bottom: 2px; }
+  .metric span { color: var(--muted); font-size: 12.5px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 12px;
+           border: 1px solid var(--line); background: var(--panel2); color: var(--muted); }
+  .banner { border-radius: 8px; padding: 11px 14px; margin-bottom: 14px; font-size: 13.5px; }
+  .banner.warn { background: #3a2b12; border: 1px solid #6b5320; color: var(--warn); }
+  .banner.err { background: #3a1618; border: 1px solid #7a2a2d; color: var(--err); }
+  .report h1 { font-size: 20px; } .report h2 { font-size: 17px; margin-top: 26px;
+    border-bottom: 1px solid var(--line); padding-bottom: 6px; } .report h3 { font-size: 15px; }
+  .report h4 { font-size: 14px; margin-bottom: 4px; color: var(--accent); }
+  .report table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13px; }
+  .report th, .report td { border: 1px solid var(--line); padding: 6px 9px; text-align: left; }
+  .report th { background: var(--panel2); }
+  .report code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .report pre { background: #0b131b; border: 1px solid var(--line); border-radius: 8px;
+                padding: 11px; overflow: auto; }
+  .report ul { margin: 6px 0 6px 18px; }
+  .report li { margin: 3px 0; font-size: 13.5px; }
+  .report p { font-size: 13.5px; line-height: 1.75; }
+  footer { color: var(--muted); font-size: 12.5px; text-align: center; padding: 10px 0 30px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Code Review Agent</h1>
+  <span class="tag">LLM + 工具调用 · 确定性规则 + 语义审查</span>
+  <span id="health" class="tag" style="margin-left:auto"></span>
+</header>
+
+<main>
+  <div class="card">
+    <div class="row">
+      <div>
+        <label for="path">要审查的路径（相对服务器启动目录，或绝对路径）</label>
+        <input type="text" id="path" value="." spellcheck="false" />
+      </div>
+      <div>
+        <label for="steps">Agent 最大步数</label>
+        <input type="number" id="steps" value="8" min="1" max="20" />
+      </div>
+      <div>
+        <button id="run">开始审查</button>
+      </div>
+    </div>
+
+    <div class="checks">
+      <label><input type="checkbox" class="focus" value="bug" checked /> 缺陷</label>
+      <label><input type="checkbox" class="focus" value="security" /> 安全</label>
+      <label><input type="checkbox" class="focus" value="performance" /> 性能</label>
+      <label><input type="checkbox" class="focus" value="maintainability" /> 可维护性</label>
+      <label><input type="checkbox" class="focus" value="style" /> 风格</label>
+      <label><input type="checkbox" id="offline" /> 离线规则模式（不调用 LLM）</label>
+    </div>
+
+    <div class="hint">
+      建议先用 <code>examples</code> 目录体验：其中故意放置了裸 except、可变默认参数、硬编码密钥、
+      语法错误文件与二进制文件等边界样例。审查过程中页面会显示已用时间，请耐心等待（在线模式通常 10~60 秒）。
+    </div>
+  </div>
+
+  <div id="status"></div>
+  <div id="metrics" class="cards" style="margin-bottom:18px"></div>
+  <div id="report" class="card report"></div>
+  <footer>Code Review Agent · 生成的报告仅供参考，请结合业务上下文判断</footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let timer = null;
+
+async function loadHealth() {
+  try {
+    const res = await fetch('/api/health');
+    const data = await res.json();
+    $('health').textContent = `模型 ${data.model} · ${data.offline || !data.has_key ? '离线规则模式' : '在线 Agent'} · v${data.version}`;
+    if (data.offline || !data.has_key) { $('offline').checked = true; }
+  } catch (e) { $('health').textContent = '无法连接后端'; }
+}
+
+function setStatus(html, kind) {
+  $('status').innerHTML = html ? `<div class="banner ${kind || ''}">${html}</div>` : '';
+}
+
+function renderMetrics(d) {
+  const c = d.counts || {};
+  const sev = c.by_severity || {};
+  const items = [
+    ['文件数', c.files ?? '-'],
+    ['问题总数', c.findings ?? '-'],
+    ['致命/严重', (sev.critical || 0) + (sev.high || 0)],
+    ['中等', sev.medium || 0],
+    ['轻微/提示', (sev.low || 0) + (sev.info || 0)],
+    ['耗时(秒)', d.duration ?? '-'],
+    ['Agent 步数', (d.usage || {}).steps ?? '-'],
+    ['工具调用', (d.usage || {}).tool_calls ?? '-'],
+  ];
+  $('metrics').innerHTML = items
+    .map(([label, value]) => `<div class="metric"><b>${value}</b><span>${label}</span></div>`)
+    .join('');
+}
+
+async function run() {
+  const path = $('path').value.trim() || '.';
+  const focus = [...document.querySelectorAll('.focus:checked')].map((el) => el.value);
+  const payload = {
+    path,
+    focus,
+    offline: $('offline').checked,
+    max_steps: parseInt($('steps').value, 10) || 8,
+  };
+
+  $('run').disabled = true;
+  $('metrics').innerHTML = '';
+  $('report').innerHTML = '';
+  const started = Date.now();
+  setStatus('正在审查…（已用 0s）', '');
+  timer = setInterval(() => {
+    setStatus(`正在审查 <code>${path}</code>…（已用 ${((Date.now() - started) / 1000).toFixed(0)}s）`, '');
+  }, 1000);
+
+  try {
+    const res = await fetch('/api/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      setStatus('审查失败：' + (data.error || res.statusText), 'err');
+      return;
+    }
+    setStatus('');
+    if (data.degraded) {
+      setStatus('注意：本次结果已降级 —— ' + (data.degraded_reason || '未使用 LLM'), 'warn');
+    }
+    renderMetrics(data);
+    $('report').innerHTML = data.report_html || '<p>（无报告内容）</p>';
+  } catch (err) {
+    setStatus('请求异常：' + err, 'err');
+  } finally {
+    clearInterval(timer);
+    $('run').disabled = false;
+  }
+}
+
+$('run').addEventListener('click', run);
+$('path').addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+loadHealth();
+</script>
+</body>
+</html>

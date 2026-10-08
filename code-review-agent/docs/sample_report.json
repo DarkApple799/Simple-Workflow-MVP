@@ -1,0 +1,3447 @@
+{
+  "generated_at": "2026-09-26 10:30:27",
+  "root": "G:\\DeepSeek工程\\code-review-agent\\examples",
+  "mode": "online",
+  "degraded": false,
+  "degraded_reason": "",
+  "verdict": "request_changes",
+  "summary": "本次审查覆盖工作区全部文件：buggy_service.py（190 行，问题集中）、utils_clean.py（干净对照）、messy/ 下的 GBK 编码文件、语法错误文件、大文件、纯文本与非 Python 脚本。整体质量：buggy_service.py 存在多处严重安全与逻辑缺陷（硬编码密钥、eval/os.system/shell=True 命令注入、pickle 反序列化、静默吞异常、遍历中修改列表），属于必须修改后才能合并的代码；utils_clean.py 质量良好，无规则命中。处理方式说明：messy/syntax_error.py 无法解析（第 2 行 invalid syntax），仅能报告语法错误本身；messy/legacy_gbk.py 以 gb18030 成功解码并完成 AST 分析；messy/big_generated.py（3602 行）为自动生成的重复函数，仅抽样确认无逻辑问题，未逐行审查；messy/notes.txt 为纯文本、messy/script.js 为非 Python 代码，不做 AST 分析，但已用语义方式审查（见 findings）。",
+  "counts": {
+    "files": 9,
+    "findings": 54,
+    "by_severity": {
+      "critical": 5,
+      "high": 7,
+      "medium": 5,
+      "low": 8,
+      "info": 29
+    },
+    "by_category": {
+      "security": 7,
+      "bug": 11,
+      "maintainability": 6,
+      "style": 1,
+      "other": 2,
+      "documentation": 27
+    }
+  },
+  "findings": [
+    {
+      "title": "疑似硬编码密钥/口令",
+      "file": "buggy_service.py",
+      "line": 11,
+      "severity": "critical",
+      "category": "security",
+      "detail": "第 11-13 行将 API_KEY=\"sk-demo-1234567890abcdef\"、DB_PASSWORD=\"P@ssw0rd123\"、ADMIN_TOKEN=\"token-demo-abcdef123456\" 明文写入源码。任何能读取仓库的人（含 CI 日志、镜像层、git 历史）都能获得凭据，且一旦提交即长期泄露。",
+      "suggestion": "改为从环境变量或密钥管理服务读取，例如 `API_KEY = os.environ[\"API_KEY\"]`（缺失时启动即失败）；同时轮换这三个已泄露的凭据并从 git 历史中清理。",
+      "evidence": "API_KEY=***",
+      "rule_id": "SEC001",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "9104d18ba0"
+    },
+    {
+      "title": "subprocess 使用 shell=True",
+      "file": "buggy_service.py",
+      "line": 47,
+      "severity": "critical",
+      "category": "security",
+      "detail": "notify(user) 执行 subprocess.run(\"echo notify \" + user, shell=True)。user 由外部传入，含 shell 元字符时可注入任意命令；且第 48-49 行用 except Exception: pass 吞掉所有失败，注入行为不会留下任何日志。",
+      "suggestion": "改为 `subprocess.run([\"echo\", \"notify\", user], shell=False, check=True)`；异常至少 `logging.exception(...)` 记录，不要静默 pass。",
+      "evidence": "46:     try:\n47:         subprocess.run(\"echo notify \" + user, shell=True)\n48:     except Exception:\n49:         pass",
+      "rule_id": "SEC003",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "6bea885385"
+    },
+    {
+      "title": "使用 eval/exec 执行动态代码",
+      "file": "buggy_service.py",
+      "line": 53,
+      "severity": "critical",
+      "category": "security",
+      "detail": "evaluate(expression) 直接把参数交给 eval()。只要 expression 来自请求参数、配置或数据库，攻击者即可执行任意 Python 代码（如 __import__('os').system(...)），等价于 RCE。",
+      "suggestion": "若只需解析字面量，改用 `ast.literal_eval(expression)`；若需表达式求值，使用受限的解析器（如 ast 白名单节点）或显式映射表，禁止直接 eval。",
+      "evidence": "52: def evaluate(expression):\n53:     return eval(expression)",
+      "rule_id": "SEC002",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "ff2c6cfb6c"
+    },
+    {
+      "title": "os.system 直接执行字符串命令",
+      "file": "buggy_service.py",
+      "line": 57,
+      "severity": "critical",
+      "category": "security",
+      "detail": "ping(host) 使用 os.system(\"ping -n 1 \" + host)。host 若含 `; rm -rf /` 或 `& whoami` 等字符，会被 shell 解释执行，形成命令注入；同时 os.system 无法获取返回码与输出。",
+      "suggestion": "改用 `subprocess.run([\"ping\", \"-n\", \"1\", host], shell=False, check=True, capture_output=True)`，并对 host 做白名单校验（如仅允许 IP/域名正则）。",
+      "evidence": "56: def ping(host):\n57:     os.system(\"ping -n 1 \" + host)",
+      "rule_id": "SEC004",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "9c6bea1ef3"
+    },
+    {
+      "title": "不安全的反序列化（pickle/yaml.load）",
+      "file": "buggy_service.py",
+      "line": 61,
+      "severity": "critical",
+      "category": "security",
+      "detail": "restore_session(blob) 直接 pickle.loads(blob)。pickle 在反序列化时会执行 __reduce__ 指定的可调用对象，若 blob 来自客户端 cookie/session，攻击者可构造恶意 payload 实现 RCE。",
+      "suggestion": "改用 JSON 等安全格式；若必须保留对象结构，使用带签名校验的序列化（如 itsdangerous 签名 + json），并在反序列化前验证来源与完整性。",
+      "evidence": "60: def restore_session(blob):\n61:     return pickle.loads(blob)",
+      "rule_id": "SEC005",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "db2bb414ff"
+    },
+    {
+      "title": "可变对象作为默认参数",
+      "file": "buggy_service.py",
+      "line": 19,
+      "severity": "high",
+      "category": "bug",
+      "detail": "load_users 的 `options={}, filters=[]`（第 19 行）与 run_pipeline 的 `options={}`（第 104 行）使用可变默认值。默认对象在函数定义时创建并被所有调用共享，任何一次调用对其修改都会污染后续调用，产生难以复现的串数据问题。",
+      "suggestion": "默认值改为 None，函数体内初始化：`def load_users(path, options=None, filters=None, ...): options = {} if options is None else options; filters = [] if filters is None else filters`。",
+      "evidence": "19: def load_users(path, options={}, filters=[], verbose=False, timeout=30, strict=True):\n104: def run_pipeline(path, options={}):",
+      "rule_id": "BUG003",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "357a9815a1"
+    },
+    {
+      "title": "裸 except 捕获所有异常",
+      "file": "buggy_service.py",
+      "line": 41,
+      "severity": "high",
+      "category": "bug",
+      "detail": "read_config 用 `except:` 捕获一切并返回 {}。这会连 KeyboardInterrupt/SystemExit 一起吞掉，且配置读取失败（文件不存在、JSON 损坏、权限不足）被伪装成「空配置」，故障完全不可见。",
+      "suggestion": "改为 `except (OSError, json.JSONDecodeError) as exc: logging.warning(\"read_config failed: %s\", exc); return {}`，只捕获预期异常并记录日志。",
+      "evidence": "37: def read_config(path):\n38:     try:\n39:         with open(path) as handle:\n40:             return json.load(handle)\n41:     except:\n42:         return {}",
+      "rule_id": "BUG001",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "9b6d76fc24"
+    },
+    {
+      "title": "异常被静默吞掉（except + pass）",
+      "file": "buggy_service.py",
+      "line": 48,
+      "severity": "high",
+      "category": "bug",
+      "detail": "捕获 Exception 后直接 pass/continue，异常信息被完全丢弃，出问题无法定位。",
+      "suggestion": "至少记录日志（logging.exception）或向上抛出。",
+      "evidence": "",
+      "rule_id": "BUG002",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "3f7b197ae4"
+    },
+    {
+      "title": "可变对象作为默认参数",
+      "file": "buggy_service.py",
+      "line": 104,
+      "severity": "high",
+      "category": "bug",
+      "detail": "函数 run_pipeline 使用可变对象作为默认参数，该对象在多次调用间共享，容易被意外修改。",
+      "suggestion": "默认值改用 None，函数体内再 `if param is None: param = []`。",
+      "evidence": "",
+      "rule_id": "BUG003",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "5056d40032"
+    },
+    {
+      "title": "修改正在遍历的列表/字典",
+      "file": "buggy_service.py",
+      "line": 189,
+      "severity": "high",
+      "category": "bug",
+      "detail": "purge_inactive 在 `for user in users:` 循环体内调用 `users.remove(user)`，会改变正在遍历的容器：相邻的 inactive 元素会被跳过（漏删），且语义上属于未定义行为。",
+      "suggestion": "改为遍历副本或重建列表：`return [u for u in users if u.get(\"active\")]`；若必须原地修改，用 `users[:] = [u for u in users if u.get(\"active\")]`。",
+      "evidence": "186: def purge_inactive(users):\n187:     for user in users:\n188:         if not user.get(\"active\"):\n189:             users.remove(user)",
+      "rule_id": "BUG006",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "c83d535a66"
+    },
+    {
+      "title": "JS 中 eval 拼接输入 + 空 catch + innerHTML XSS",
+      "file": "messy/script.js",
+      "line": 12,
+      "severity": "high",
+      "category": "security",
+      "detail": "非 Python 文件，但存在三处真实缺陷：(1) 第 12 行 `eval(\"({id: \" + id + \"})\")` 直接拼接 id，可注入任意 JS 代码；(2) 第 14-15 行 `catch (e) {}` 空捕获，异常被完全吞掉；(3) 第 21-23 行把 users[i].name 拼进 innerHTML，未转义，存在 XSS。此外第 2 行硬编码 API_SECRET。",
+      "suggestion": "用 `JSON.parse` 或直接构造对象替代 eval；catch 中至少 `console.error(e)`；渲染改用 `textContent` 或对内容做 HTML 转义；密钥移出前端代码（前端不应持有 secret）。",
+      "evidence": "2: var API_SECRET = \"js-demo-secret-123456\";\n12: var data = eval(\"({id: \" + id + \"})\");\n14: } catch (e) {\n15: }\n23: document.getElementById(\"app\").innerHTML = html;",
+      "rule_id": "",
+      "source": "agent",
+      "sources": [
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "14c0fce65d"
+    },
+    {
+      "title": "语法错误，无法解析",
+      "file": "messy/syntax_error.py",
+      "line": 2,
+      "severity": "high",
+      "category": "bug",
+      "detail": "第 2 行 `def broken_function(:` 缺少参数列表右括号，第 6 行 `class IncompleteClass` 缺少冒号，文件无法解析（parse_ok=false）。该文件无法被导入、测试或静态分析，若被其他模块 import 会导致整个进程启动失败。",
+      "suggestion": "修正为 `def broken_function():` 与 `class IncompleteClass:`；建议在 CI 中加入 `python -m compileall` 或 ruff/flake8 语法检查作为门禁，防止此类文件进入主干。",
+      "evidence": "parse_error: 第 2 行解析失败：invalid syntax；原文：def broken_function(:",
+      "rule_id": "SYN001",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "eca41271d2"
+    },
+    {
+      "title": "使用 == None 比较",
+      "file": "buggy_service.py",
+      "line": 23,
+      "severity": "medium",
+      "category": "bug",
+      "detail": "`data = json.load(open(path))` 未使用 with 语句，文件对象依赖 GC 回收。在 CPython 之外或异常路径下句柄可能长时间不释放，批量调用会耗尽文件描述符。",
+      "suggestion": "改为 `with open(path, encoding=\"utf-8\") as handle: data = json.load(handle)`。",
+      "evidence": "20:     data = json.load(open(path))",
+      "rule_id": "BUG004",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "3858de5483"
+    },
+    {
+      "title": "assert 用于输入校验",
+      "file": "buggy_service.py",
+      "line": 84,
+      "severity": "medium",
+      "category": "bug",
+      "detail": "verify_user 用 `assert user_id` 校验入参。生产环境常以 `python -O` 运行，assert 会被整体移除，校验随之消失，user_id 为 None 时会继续执行到 data.get(None) 产生错误行为。",
+      "suggestion": "改为显式校验：`if not user_id: raise ValueError(\"user_id is required\")`。",
+      "evidence": "83: def verify_user(user_id, data):\n84:     assert user_id",
+      "rule_id": "SEC006",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "c3808b71aa"
+    },
+    {
+      "title": "圈复杂度过高",
+      "file": "buggy_service.py",
+      "line": 104,
+      "severity": "medium",
+      "category": "maintainability",
+      "detail": "run_pipeline 圈复杂度约 17（阈值 10）、长度 50 行，最深处有 6 层 if 嵌套（112-126 行），且第 108-135 与 136-151 两段循环逻辑高度重复。代码中已有 `# TODO: 这里的分支太多，需要重构` 自认。此类结构极易在修改时引入分支遗漏。",
+      "suggestion": "用早返回（guard clause）打平嵌套，并把「判断单个用户是否计入 loaded/skipped/errors」抽成独立函数（如 `classify_user(user, config) -> str`），两个循环合并为一次遍历。",
+      "evidence": "104: def run_pipeline(path, options={}):\n105:     # TODO: 这里的分支太多，需要重构\n...\n112-126: if/if/if/if/if 六层嵌套",
+      "rule_id": "MAINT002",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "74c485925d"
+    },
+    {
+      "title": "MD5 用于摘要，不适合安全场景",
+      "file": "buggy_service.py",
+      "line": 157,
+      "severity": "medium",
+      "category": "security",
+      "detail": "digest 使用 hashlib.md5()。MD5 已被证明存在实用碰撞攻击，若该摘要用于签名、口令或完整性校验，可被伪造。",
+      "suggestion": "安全用途改用 `hashlib.sha256()` 或 `hashlib.blake2b()`；若仅作非安全缓存键，请在函数 docstring 中明确说明用途。",
+      "evidence": "156: def digest(payload, salt=\"\"):\n157:     hasher = hashlib.md5()",
+      "rule_id": "",
+      "source": "agent",
+      "sources": [
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "5a22512729"
+    },
+    {
+      "title": "裸 except 捕获所有异常",
+      "file": "messy/legacy_gbk.py",
+      "line": 7,
+      "severity": "medium",
+      "category": "bug",
+      "detail": "legacy_handler 用 `except:` 捕获一切并返回 ''。解码失败（非法字节、类型错误）与 KeyboardInterrupt 被同等对待，调用方无法区分「空数据」与「解码失败」，问题被静默掩盖。",
+      "suggestion": "改为 `except (UnicodeDecodeError, AttributeError) as exc: logging.warning(...); return ''`，或让异常向上抛出由调用方决定降级策略。",
+      "evidence": "5:     try:\n6:         return payload.decode('gbk')\n7:     except:\n8:         return ''",
+      "rule_id": "BUG001",
+      "source": "rule+agent",
+      "sources": [
+        "rule",
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "f35aec45e0"
+    },
+    {
+      "title": "未使用的导入",
+      "file": "buggy_service.py",
+      "line": 9,
+      "severity": "low",
+      "category": "maintainability",
+      "detail": "导入了 time 但未使用（import time）。",
+      "suggestion": "删除该导入，或确认是否漏用了本应调用的函数。",
+      "evidence": "",
+      "rule_id": "MAINT006",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "c7d24bcbb9"
+    },
+    {
+      "title": "参数过多",
+      "file": "buggy_service.py",
+      "line": 19,
+      "severity": "low",
+      "category": "maintainability",
+      "detail": "函数 load_users 有 6 个参数，调用方容易传错。",
+      "suggestion": "把相关参数聚合为 dataclass / 配置对象。",
+      "evidence": "",
+      "rule_id": "MAINT003",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "83dc287a17"
+    },
+    {
+      "title": "变量名遮蔽内置函数",
+      "file": "buggy_service.py",
+      "line": 64,
+      "severity": "low",
+      "category": "maintainability",
+      "detail": "参数名 'list' 遮蔽了内置名，函数体内将无法直接调用同名内置函数。",
+      "suggestion": "改名为 list_value 之类的非内置名。",
+      "evidence": "",
+      "rule_id": "MAINT008",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "c0c1c63cb1"
+    },
+    {
+      "title": "使用 == None 比较",
+      "file": "buggy_service.py",
+      "line": 69,
+      "severity": "low",
+      "category": "bug",
+      "detail": "与 None 比较应使用 is / is not；== 依赖对象的 __eq__ 实现，可能被重载。",
+      "suggestion": "改为 `is None` 或 `is not None`。",
+      "evidence": "",
+      "rule_id": "BUG004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "45feb2cd4f"
+    },
+    {
+      "title": "使用 == None 比较",
+      "file": "buggy_service.py",
+      "line": 86,
+      "severity": "low",
+      "category": "bug",
+      "detail": "与 None 比较应使用 is / is not；== 依赖对象的 __eq__ 实现，可能被重载。",
+      "suggestion": "改为 `is None` 或 `is not None`。",
+      "evidence": "",
+      "rule_id": "BUG004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "3840076bcc"
+    },
+    {
+      "title": "调试用 print 与遮蔽内置名等风格问题",
+      "file": "buggy_service.py",
+      "line": 152,
+      "severity": "low",
+      "category": "style",
+      "detail": "代表性风格问题：第 152 行 `print(\"pipeline result:\", result)` 在库代码中直接打印，无法按级别过滤；第 64 行 `def summarize(list)` 用内置名 list 作参数名，遮蔽内置类型；第 23/69/86 行使用 `== None` 而非 `is None`；第 9 行 `import time` 未使用。这些不影响功能，但降低可维护性。",
+      "suggestion": "print 改为 `logging.getLogger(__name__).info(...)`；参数改名 `items`；`== None` 改为 `is None`；删除未使用的 `import time`。建议引入 ruff 统一处理此类问题。",
+      "evidence": "152:     print(\"pipeline result:\", result)\n64: def summarize(list):\n23:         if user[\"age\"] == None:\n9: import time",
+      "rule_id": "MAINT009",
+      "source": "agent",
+      "sources": [
+        "agent"
+      ],
+      "confidence": 1.0,
+      "id": "61c27dc116"
+    },
+    {
+      "title": "调试用 print 语句",
+      "file": "buggy_service.py",
+      "line": 152,
+      "severity": "low",
+      "category": "maintainability",
+      "detail": "使用 print 直接输出：库代码里难以按级别过滤，也不利于线上排查。",
+      "suggestion": "库代码改用 logging.getLogger(__name__)；命令行脚本可忽略本提示。",
+      "evidence": "",
+      "rule_id": "MAINT009",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "ab71332e3d"
+    },
+    {
+      "title": "参数过多",
+      "file": "buggy_service.py",
+      "line": 170,
+      "severity": "low",
+      "category": "maintainability",
+      "detail": "函数 format_user 有 7 个参数，调用方容易传错。",
+      "suggestion": "把相关参数聚合为 dataclass / 配置对象。",
+      "evidence": "",
+      "rule_id": "MAINT003",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "2c072423f2"
+    },
+    {
+      "title": "该文件问题较多，已折叠",
+      "file": "buggy_service.py",
+      "line": null,
+      "severity": "info",
+      "category": "other",
+      "detail": "另有 8 条低优先级问题未在报告正文展开（可用 scan 子命令查看完整明细）。",
+      "suggestion": "建议先修高危问题，再批量跑格式化工具处理风格问题。",
+      "evidence": "",
+      "rule_id": "LIMIT001",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "9cacc6377b"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "buggy_service.py",
+      "line": 19,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 load_users 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "7d465b702e"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "buggy_service.py",
+      "line": 37,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 read_config 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "78922f0c98"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "buggy_service.py",
+      "line": 45,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 notify 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "56ed4ba785"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "buggy_service.py",
+      "line": 52,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 evaluate 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "0d69e2e2ab"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "buggy_service.py",
+      "line": 56,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 ping 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "10a36e11fb"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "buggy_service.py",
+      "line": 60,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 restore_session 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "fe3361aaaf"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "buggy_service.py",
+      "line": 83,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 verify_user 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "631e090ed1"
+    },
+    {
+      "title": "该文件问题较多，已折叠",
+      "file": "messy/big_generated.py",
+      "line": null,
+      "severity": "info",
+      "category": "other",
+      "detail": "另有 1172 条低优先级问题未在报告正文展开（可用 scan 子命令查看完整明细）。",
+      "suggestion": "建议先修高危问题，再批量跑格式化工具处理风格问题。",
+      "evidence": "",
+      "rule_id": "LIMIT001",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "c4e963315c"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 3,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_1 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "9ded91b6fe"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 6,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_2 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "4a33397b99"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 12,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_4 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "bd7e91b3f8"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 15,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_5 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "ff821a5c7f"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 21,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_7 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "b2d4c58a68"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 27,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_9 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "30264be284"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 30,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_10 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "05b3ef5b53"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 36,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_12 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "63d2579775"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 42,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_14 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "2cebf725a8"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 45,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_15 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "2f2497849b"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 51,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_17 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "9efcb97945"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 57,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_19 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "8ae5fabfe7"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 60,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_20 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "cbccce1fc4"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 66,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_22 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "3dee9186bc"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 72,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_24 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "e619f034da"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 75,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_25 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "61c47a895d"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 81,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_27 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "2e8099b661"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 87,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_29 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "1e4d6e851b"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/big_generated.py",
+      "line": 90,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 generated_30 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "e1f9a8cb52"
+    },
+    {
+      "title": "缺少文档字符串",
+      "file": "messy/legacy_gbk.py",
+      "line": 3,
+      "severity": "info",
+      "category": "documentation",
+      "detail": "公开函数 legacy_handler 缺少文档字符串。",
+      "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+      "evidence": "",
+      "rule_id": "MAINT004",
+      "source": "rule",
+      "sources": [
+        "rule"
+      ],
+      "confidence": 1.0,
+      "id": "a7f2563a18"
+    }
+  ],
+  "agent": {
+    "summary": "本次审查覆盖工作区全部文件：buggy_service.py（190 行，问题集中）、utils_clean.py（干净对照）、messy/ 下的 GBK 编码文件、语法错误文件、大文件、纯文本与非 Python 脚本。整体质量：buggy_service.py 存在多处严重安全与逻辑缺陷（硬编码密钥、eval/os.system/shell=True 命令注入、pickle 反序列化、静默吞异常、遍历中修改列表），属于必须修改后才能合并的代码；utils_clean.py 质量良好，无规则命中。处理方式说明：messy/syntax_error.py 无法解析（第 2 行 invalid syntax），仅能报告语法错误本身；messy/legacy_gbk.py 以 gb18030 成功解码并完成 AST 分析；messy/big_generated.py（3602 行）为自动生成的重复函数，仅抽样确认无逻辑问题，未逐行审查；messy/notes.txt 为纯文本、messy/script.js 为非 Python 代码，不做 AST 分析，但已用语义方式审查（见 findings）。",
+    "verdict": "request_changes",
+    "findings": [
+      {
+        "title": "疑似硬编码密钥/口令",
+        "file": "buggy_service.py",
+        "line": 11,
+        "severity": "critical",
+        "category": "security",
+        "detail": "第 11-13 行将 API_KEY=\"sk-demo-1234567890abcdef\"、DB_PASSWORD=\"P@ssw0rd123\"、ADMIN_TOKEN=\"token-demo-abcdef123456\" 明文写入源码。任何能读取仓库的人（含 CI 日志、镜像层、git 历史）都能获得凭据，且一旦提交即长期泄露。",
+        "suggestion": "改为从环境变量或密钥管理服务读取，例如 `API_KEY = os.environ[\"API_KEY\"]`（缺失时启动即失败）；同时轮换这三个已泄露的凭据并从 git 历史中清理。",
+        "evidence": "API_KEY=***",
+        "rule_id": "SEC001",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "9104d18ba0"
+      },
+      {
+        "title": "subprocess 使用 shell=True",
+        "file": "buggy_service.py",
+        "line": 47,
+        "severity": "critical",
+        "category": "security",
+        "detail": "notify(user) 执行 subprocess.run(\"echo notify \" + user, shell=True)。user 由外部传入，含 shell 元字符时可注入任意命令；且第 48-49 行用 except Exception: pass 吞掉所有失败，注入行为不会留下任何日志。",
+        "suggestion": "改为 `subprocess.run([\"echo\", \"notify\", user], shell=False, check=True)`；异常至少 `logging.exception(...)` 记录，不要静默 pass。",
+        "evidence": "46:     try:\n47:         subprocess.run(\"echo notify \" + user, shell=True)\n48:     except Exception:\n49:         pass",
+        "rule_id": "SEC003",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "6bea885385"
+      },
+      {
+        "title": "使用 eval/exec 执行动态代码",
+        "file": "buggy_service.py",
+        "line": 53,
+        "severity": "critical",
+        "category": "security",
+        "detail": "evaluate(expression) 直接把参数交给 eval()。只要 expression 来自请求参数、配置或数据库，攻击者即可执行任意 Python 代码（如 __import__('os').system(...)），等价于 RCE。",
+        "suggestion": "若只需解析字面量，改用 `ast.literal_eval(expression)`；若需表达式求值，使用受限的解析器（如 ast 白名单节点）或显式映射表，禁止直接 eval。",
+        "evidence": "52: def evaluate(expression):\n53:     return eval(expression)",
+        "rule_id": "SEC002",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "ff2c6cfb6c"
+      },
+      {
+        "title": "os.system 直接执行字符串命令",
+        "file": "buggy_service.py",
+        "line": 57,
+        "severity": "critical",
+        "category": "security",
+        "detail": "ping(host) 使用 os.system(\"ping -n 1 \" + host)。host 若含 `; rm -rf /` 或 `& whoami` 等字符，会被 shell 解释执行，形成命令注入；同时 os.system 无法获取返回码与输出。",
+        "suggestion": "改用 `subprocess.run([\"ping\", \"-n\", \"1\", host], shell=False, check=True, capture_output=True)`，并对 host 做白名单校验（如仅允许 IP/域名正则）。",
+        "evidence": "56: def ping(host):\n57:     os.system(\"ping -n 1 \" + host)",
+        "rule_id": "SEC004",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "9c6bea1ef3"
+      },
+      {
+        "title": "不安全的反序列化（pickle/yaml.load）",
+        "file": "buggy_service.py",
+        "line": 61,
+        "severity": "critical",
+        "category": "security",
+        "detail": "restore_session(blob) 直接 pickle.loads(blob)。pickle 在反序列化时会执行 __reduce__ 指定的可调用对象，若 blob 来自客户端 cookie/session，攻击者可构造恶意 payload 实现 RCE。",
+        "suggestion": "改用 JSON 等安全格式；若必须保留对象结构，使用带签名校验的序列化（如 itsdangerous 签名 + json），并在反序列化前验证来源与完整性。",
+        "evidence": "60: def restore_session(blob):\n61:     return pickle.loads(blob)",
+        "rule_id": "SEC005",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "db2bb414ff"
+      },
+      {
+        "title": "可变对象作为默认参数",
+        "file": "buggy_service.py",
+        "line": 19,
+        "severity": "high",
+        "category": "bug",
+        "detail": "load_users 的 `options={}, filters=[]`（第 19 行）与 run_pipeline 的 `options={}`（第 104 行）使用可变默认值。默认对象在函数定义时创建并被所有调用共享，任何一次调用对其修改都会污染后续调用，产生难以复现的串数据问题。",
+        "suggestion": "默认值改为 None，函数体内初始化：`def load_users(path, options=None, filters=None, ...): options = {} if options is None else options; filters = [] if filters is None else filters`。",
+        "evidence": "19: def load_users(path, options={}, filters=[], verbose=False, timeout=30, strict=True):\n104: def run_pipeline(path, options={}):",
+        "rule_id": "BUG003",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "357a9815a1"
+      },
+      {
+        "title": "裸 except 捕获所有异常",
+        "file": "buggy_service.py",
+        "line": 41,
+        "severity": "high",
+        "category": "bug",
+        "detail": "read_config 用 `except:` 捕获一切并返回 {}。这会连 KeyboardInterrupt/SystemExit 一起吞掉，且配置读取失败（文件不存在、JSON 损坏、权限不足）被伪装成「空配置」，故障完全不可见。",
+        "suggestion": "改为 `except (OSError, json.JSONDecodeError) as exc: logging.warning(\"read_config failed: %s\", exc); return {}`，只捕获预期异常并记录日志。",
+        "evidence": "37: def read_config(path):\n38:     try:\n39:         with open(path) as handle:\n40:             return json.load(handle)\n41:     except:\n42:         return {}",
+        "rule_id": "BUG001",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "9b6d76fc24"
+      },
+      {
+        "title": "异常被静默吞掉（except + pass）",
+        "file": "buggy_service.py",
+        "line": 48,
+        "severity": "high",
+        "category": "bug",
+        "detail": "捕获 Exception 后直接 pass/continue，异常信息被完全丢弃，出问题无法定位。",
+        "suggestion": "至少记录日志（logging.exception）或向上抛出。",
+        "evidence": "",
+        "rule_id": "BUG002",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "3f7b197ae4"
+      },
+      {
+        "title": "可变对象作为默认参数",
+        "file": "buggy_service.py",
+        "line": 104,
+        "severity": "high",
+        "category": "bug",
+        "detail": "函数 run_pipeline 使用可变对象作为默认参数，该对象在多次调用间共享，容易被意外修改。",
+        "suggestion": "默认值改用 None，函数体内再 `if param is None: param = []`。",
+        "evidence": "",
+        "rule_id": "BUG003",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "5056d40032"
+      },
+      {
+        "title": "修改正在遍历的列表/字典",
+        "file": "buggy_service.py",
+        "line": 189,
+        "severity": "high",
+        "category": "bug",
+        "detail": "purge_inactive 在 `for user in users:` 循环体内调用 `users.remove(user)`，会改变正在遍历的容器：相邻的 inactive 元素会被跳过（漏删），且语义上属于未定义行为。",
+        "suggestion": "改为遍历副本或重建列表：`return [u for u in users if u.get(\"active\")]`；若必须原地修改，用 `users[:] = [u for u in users if u.get(\"active\")]`。",
+        "evidence": "186: def purge_inactive(users):\n187:     for user in users:\n188:         if not user.get(\"active\"):\n189:             users.remove(user)",
+        "rule_id": "BUG006",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "c83d535a66"
+      },
+      {
+        "title": "JS 中 eval 拼接输入 + 空 catch + innerHTML XSS",
+        "file": "messy/script.js",
+        "line": 12,
+        "severity": "high",
+        "category": "security",
+        "detail": "非 Python 文件，但存在三处真实缺陷：(1) 第 12 行 `eval(\"({id: \" + id + \"})\")` 直接拼接 id，可注入任意 JS 代码；(2) 第 14-15 行 `catch (e) {}` 空捕获，异常被完全吞掉；(3) 第 21-23 行把 users[i].name 拼进 innerHTML，未转义，存在 XSS。此外第 2 行硬编码 API_SECRET。",
+        "suggestion": "用 `JSON.parse` 或直接构造对象替代 eval；catch 中至少 `console.error(e)`；渲染改用 `textContent` 或对内容做 HTML 转义；密钥移出前端代码（前端不应持有 secret）。",
+        "evidence": "2: var API_SECRET = \"js-demo-secret-123456\";\n12: var data = eval(\"({id: \" + id + \"})\");\n14: } catch (e) {\n15: }\n23: document.getElementById(\"app\").innerHTML = html;",
+        "rule_id": "",
+        "source": "agent",
+        "sources": [
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "14c0fce65d"
+      },
+      {
+        "title": "语法错误，无法解析",
+        "file": "messy/syntax_error.py",
+        "line": 2,
+        "severity": "high",
+        "category": "bug",
+        "detail": "第 2 行 `def broken_function(:` 缺少参数列表右括号，第 6 行 `class IncompleteClass` 缺少冒号，文件无法解析（parse_ok=false）。该文件无法被导入、测试或静态分析，若被其他模块 import 会导致整个进程启动失败。",
+        "suggestion": "修正为 `def broken_function():` 与 `class IncompleteClass:`；建议在 CI 中加入 `python -m compileall` 或 ruff/flake8 语法检查作为门禁，防止此类文件进入主干。",
+        "evidence": "parse_error: 第 2 行解析失败：invalid syntax；原文：def broken_function(:",
+        "rule_id": "SYN001",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "eca41271d2"
+      },
+      {
+        "title": "使用 == None 比较",
+        "file": "buggy_service.py",
+        "line": 23,
+        "severity": "medium",
+        "category": "bug",
+        "detail": "`data = json.load(open(path))` 未使用 with 语句，文件对象依赖 GC 回收。在 CPython 之外或异常路径下句柄可能长时间不释放，批量调用会耗尽文件描述符。",
+        "suggestion": "改为 `with open(path, encoding=\"utf-8\") as handle: data = json.load(handle)`。",
+        "evidence": "20:     data = json.load(open(path))",
+        "rule_id": "BUG004",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "3858de5483"
+      },
+      {
+        "title": "assert 用于输入校验",
+        "file": "buggy_service.py",
+        "line": 84,
+        "severity": "medium",
+        "category": "bug",
+        "detail": "verify_user 用 `assert user_id` 校验入参。生产环境常以 `python -O` 运行，assert 会被整体移除，校验随之消失，user_id 为 None 时会继续执行到 data.get(None) 产生错误行为。",
+        "suggestion": "改为显式校验：`if not user_id: raise ValueError(\"user_id is required\")`。",
+        "evidence": "83: def verify_user(user_id, data):\n84:     assert user_id",
+        "rule_id": "SEC006",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "c3808b71aa"
+      },
+      {
+        "title": "圈复杂度过高",
+        "file": "buggy_service.py",
+        "line": 104,
+        "severity": "medium",
+        "category": "maintainability",
+        "detail": "run_pipeline 圈复杂度约 17（阈值 10）、长度 50 行，最深处有 6 层 if 嵌套（112-126 行），且第 108-135 与 136-151 两段循环逻辑高度重复。代码中已有 `# TODO: 这里的分支太多，需要重构` 自认。此类结构极易在修改时引入分支遗漏。",
+        "suggestion": "用早返回（guard clause）打平嵌套，并把「判断单个用户是否计入 loaded/skipped/errors」抽成独立函数（如 `classify_user(user, config) -> str`），两个循环合并为一次遍历。",
+        "evidence": "104: def run_pipeline(path, options={}):\n105:     # TODO: 这里的分支太多，需要重构\n...\n112-126: if/if/if/if/if 六层嵌套",
+        "rule_id": "MAINT002",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "74c485925d"
+      },
+      {
+        "title": "MD5 用于摘要，不适合安全场景",
+        "file": "buggy_service.py",
+        "line": 157,
+        "severity": "medium",
+        "category": "security",
+        "detail": "digest 使用 hashlib.md5()。MD5 已被证明存在实用碰撞攻击，若该摘要用于签名、口令或完整性校验，可被伪造。",
+        "suggestion": "安全用途改用 `hashlib.sha256()` 或 `hashlib.blake2b()`；若仅作非安全缓存键，请在函数 docstring 中明确说明用途。",
+        "evidence": "156: def digest(payload, salt=\"\"):\n157:     hasher = hashlib.md5()",
+        "rule_id": "",
+        "source": "agent",
+        "sources": [
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "5a22512729"
+      },
+      {
+        "title": "裸 except 捕获所有异常",
+        "file": "messy/legacy_gbk.py",
+        "line": 7,
+        "severity": "medium",
+        "category": "bug",
+        "detail": "legacy_handler 用 `except:` 捕获一切并返回 ''。解码失败（非法字节、类型错误）与 KeyboardInterrupt 被同等对待，调用方无法区分「空数据」与「解码失败」，问题被静默掩盖。",
+        "suggestion": "改为 `except (UnicodeDecodeError, AttributeError) as exc: logging.warning(...); return ''`，或让异常向上抛出由调用方决定降级策略。",
+        "evidence": "5:     try:\n6:         return payload.decode('gbk')\n7:     except:\n8:         return ''",
+        "rule_id": "BUG001",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "f35aec45e0"
+      },
+      {
+        "title": "未使用的导入",
+        "file": "buggy_service.py",
+        "line": 9,
+        "severity": "low",
+        "category": "maintainability",
+        "detail": "导入了 time 但未使用（import time）。",
+        "suggestion": "删除该导入，或确认是否漏用了本应调用的函数。",
+        "evidence": "",
+        "rule_id": "MAINT006",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "c7d24bcbb9"
+      },
+      {
+        "title": "参数过多",
+        "file": "buggy_service.py",
+        "line": 19,
+        "severity": "low",
+        "category": "maintainability",
+        "detail": "函数 load_users 有 6 个参数，调用方容易传错。",
+        "suggestion": "把相关参数聚合为 dataclass / 配置对象。",
+        "evidence": "",
+        "rule_id": "MAINT003",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "83dc287a17"
+      },
+      {
+        "title": "变量名遮蔽内置函数",
+        "file": "buggy_service.py",
+        "line": 64,
+        "severity": "low",
+        "category": "maintainability",
+        "detail": "参数名 'list' 遮蔽了内置名，函数体内将无法直接调用同名内置函数。",
+        "suggestion": "改名为 list_value 之类的非内置名。",
+        "evidence": "",
+        "rule_id": "MAINT008",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "c0c1c63cb1"
+      },
+      {
+        "title": "使用 == None 比较",
+        "file": "buggy_service.py",
+        "line": 69,
+        "severity": "low",
+        "category": "bug",
+        "detail": "与 None 比较应使用 is / is not；== 依赖对象的 __eq__ 实现，可能被重载。",
+        "suggestion": "改为 `is None` 或 `is not None`。",
+        "evidence": "",
+        "rule_id": "BUG004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "45feb2cd4f"
+      },
+      {
+        "title": "使用 == None 比较",
+        "file": "buggy_service.py",
+        "line": 86,
+        "severity": "low",
+        "category": "bug",
+        "detail": "与 None 比较应使用 is / is not；== 依赖对象的 __eq__ 实现，可能被重载。",
+        "suggestion": "改为 `is None` 或 `is not None`。",
+        "evidence": "",
+        "rule_id": "BUG004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "3840076bcc"
+      },
+      {
+        "title": "调试用 print 与遮蔽内置名等风格问题",
+        "file": "buggy_service.py",
+        "line": 152,
+        "severity": "low",
+        "category": "style",
+        "detail": "代表性风格问题：第 152 行 `print(\"pipeline result:\", result)` 在库代码中直接打印，无法按级别过滤；第 64 行 `def summarize(list)` 用内置名 list 作参数名，遮蔽内置类型；第 23/69/86 行使用 `== None` 而非 `is None`；第 9 行 `import time` 未使用。这些不影响功能，但降低可维护性。",
+        "suggestion": "print 改为 `logging.getLogger(__name__).info(...)`；参数改名 `items`；`== None` 改为 `is None`；删除未使用的 `import time`。建议引入 ruff 统一处理此类问题。",
+        "evidence": "152:     print(\"pipeline result:\", result)\n64: def summarize(list):\n23:         if user[\"age\"] == None:\n9: import time",
+        "rule_id": "MAINT009",
+        "source": "agent",
+        "sources": [
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "61c27dc116"
+      },
+      {
+        "title": "调试用 print 语句",
+        "file": "buggy_service.py",
+        "line": 152,
+        "severity": "low",
+        "category": "maintainability",
+        "detail": "使用 print 直接输出：库代码里难以按级别过滤，也不利于线上排查。",
+        "suggestion": "库代码改用 logging.getLogger(__name__)；命令行脚本可忽略本提示。",
+        "evidence": "",
+        "rule_id": "MAINT009",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "ab71332e3d"
+      },
+      {
+        "title": "参数过多",
+        "file": "buggy_service.py",
+        "line": 170,
+        "severity": "low",
+        "category": "maintainability",
+        "detail": "函数 format_user 有 7 个参数，调用方容易传错。",
+        "suggestion": "把相关参数聚合为 dataclass / 配置对象。",
+        "evidence": "",
+        "rule_id": "MAINT003",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "2c072423f2"
+      },
+      {
+        "title": "该文件问题较多，已折叠",
+        "file": "buggy_service.py",
+        "line": null,
+        "severity": "info",
+        "category": "other",
+        "detail": "另有 8 条低优先级问题未在报告正文展开（可用 scan 子命令查看完整明细）。",
+        "suggestion": "建议先修高危问题，再批量跑格式化工具处理风格问题。",
+        "evidence": "",
+        "rule_id": "LIMIT001",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "9cacc6377b"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 19,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 load_users 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "7d465b702e"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 37,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 read_config 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "78922f0c98"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 45,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 notify 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "56ed4ba785"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 52,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 evaluate 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "0d69e2e2ab"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 56,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 ping 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "10a36e11fb"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 60,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 restore_session 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "fe3361aaaf"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 83,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 verify_user 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "631e090ed1"
+      },
+      {
+        "title": "该文件问题较多，已折叠",
+        "file": "messy/big_generated.py",
+        "line": null,
+        "severity": "info",
+        "category": "other",
+        "detail": "另有 1172 条低优先级问题未在报告正文展开（可用 scan 子命令查看完整明细）。",
+        "suggestion": "建议先修高危问题，再批量跑格式化工具处理风格问题。",
+        "evidence": "",
+        "rule_id": "LIMIT001",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "c4e963315c"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 3,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_1 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "9ded91b6fe"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 6,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_2 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "4a33397b99"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 12,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_4 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "bd7e91b3f8"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 15,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_5 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "ff821a5c7f"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 21,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_7 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "b2d4c58a68"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 27,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_9 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "30264be284"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 30,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_10 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "05b3ef5b53"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 36,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_12 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "63d2579775"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 42,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_14 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "2cebf725a8"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 45,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_15 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "2f2497849b"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 51,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_17 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "9efcb97945"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 57,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_19 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "8ae5fabfe7"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 60,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_20 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "cbccce1fc4"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 66,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_22 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "3dee9186bc"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 72,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_24 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "e619f034da"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 75,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_25 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "61c47a895d"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 81,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_27 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "2e8099b661"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 87,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_29 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "1e4d6e851b"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 90,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_30 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "e1f9a8cb52"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/legacy_gbk.py",
+        "line": 3,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 legacy_handler 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "a7f2563a18"
+      }
+    ],
+    "steps": 7,
+    "tool_calls": 17,
+    "degraded": false,
+    "degraded_reason": "",
+    "mode": "online",
+    "model": "deepseek-chat",
+    "usage": {
+      "prompt_tokens": 45122,
+      "completion_tokens": 4482,
+      "llm_calls": 7,
+      "llm_retries": 0
+    },
+    "duration": 19.442,
+    "notes": [],
+    "trace": [
+      {
+        "step": 1,
+        "tool": "list_files",
+        "arguments": {
+          "path": ".",
+          "max_results": "80"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "共匹配 9 个文件，显示前 9 个（工作区根目录：G:\\DeepSeek工程\\code-review-agent\\examples）：\nbuggy_service.py  [python/Python, 5.6KB, -]\nutils_clean.py  [python/Python, 1.8KB, -]\nmessy/big_generated.py  [python/Python, 62.4KB, -]\nmessy/data.bin  [binary/binary, 208B, -]\nmessy/empty_file.py  [empty/unknown, 0B, 0行]\nmessy/legacy_gbk.py  [python/Python, 229B, -]\nmessy/notes.txt  [text/Text, 261B, -]\nmessy/script.js  [code/Ja",
+        "duration": 0.009
+      },
+      {
+        "step": 1,
+        "tool": "file_stats",
+        "arguments": {
+          "path": "."
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "目录：.\n文件数：9，总大小：71.1KB，代码/文本总行数：3902\n类型分布：binary=1，code=1，empty=1，python=5，text=1\n被忽略/跳过：0 项",
+        "duration": 0.006
+      },
+      {
+        "step": 2,
+        "tool": "read_file",
+        "arguments": {
+          "path": "buggy_service.py"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "文件：buggy_service.py（共 190 行，编码 utf-8）\n\n    1 | # 用户服务示例：这个文件是\"能跑但问题很多\"的典型业务代码，\n    2 | # 故意写坏了，用来演示 Code Review Agent 能发现什么（每一处问题都对应报告里的规则编号）。\n    3 | import hashlib\n    4 | import json\n    5 | import os\n    6 | import pickle\n    7 | import re\n    8 | import subprocess\n    9 | import time\n   10 | \n   11 | API_KEY = \"sk-demo-1234567890abcdef\"\n   12 | DB_PASSWORD = \"P@ssw0rd123\"\n   13 | ADMIN_TOKEN ",
+        "duration": 0.003
+      },
+      {
+        "step": 2,
+        "tool": "read_file",
+        "arguments": {
+          "path": "utils_clean.py"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "文件：utils_clean.py（共 68 行，编码 utf-8）\n\n    1 | \"\"\"示例：写法规范、几乎不会被规则命中的对照文件。\n    2 | \n    3 | 用来对比说明——审查工具不应该对好代码\"硬凑问题\"。\n    4 | \"\"\"\n    5 | \n    6 | from __future__ import annotations\n    7 | \n    8 | import json\n    9 | from dataclasses import dataclass\n   10 | from pathlib import Path\n   11 | \n   12 | \n   13 | @dataclass(frozen=True)\n   14 | class User:\n   15 |     \"\"\"用户数据模型。\"\"\"\n   16 | \n   17 |     ",
+        "duration": 0.002
+      },
+      {
+        "step": 3,
+        "tool": "read_file",
+        "arguments": {
+          "path": "buggy_service.py",
+          "start_line": "160",
+          "max_lines": "40"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "文件：buggy_service.py（共 190 行，编码 utf-8）\n\n  160 | \n  161 | \n  162 | def find_by_pattern(users, pattern):\n  163 |     matched = []\n  164 |     for user in users:\n  165 |         if re.search(pattern, user.get(\"name\", \"\")):\n  166 |             matched.append(user)\n  167 |     return matched\n  168 | \n  169 | \n  170 | def format_user(user, include_email=True, include_phone=True, include_address=True, inc",
+        "duration": 0.002
+      },
+      {
+        "step": 3,
+        "tool": "read_file",
+        "arguments": {
+          "path": "messy/legacy_gbk.py"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "文件：messy/legacy_gbk.py（共 8 行，编码 gb18030）\n\n    1 | # -*- coding: gbk -*-\n    2 | # 这是一个用 GBK 编码保存的历史文件（中文注释）\n    3 | def legacy_handler(payload):\n    4 |     # 中文注释：旧系统上传的数据可能是 GBK 编码\n    5 |     try:\n    6 |         return payload.decode('gbk')\n    7 |     except:\n    8 |         return ''",
+        "duration": 0.002
+      },
+      {
+        "step": 3,
+        "tool": "read_file",
+        "arguments": {
+          "path": "messy/syntax_error.py"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "文件：messy/syntax_error.py（共 7 行，编码 utf-8）\n\n    1 | # 故意写坏的语法：用来验证\"待审查代码根本无法解析\"时的行为\n    2 | def broken_function(:\n    3 |     return 1\n    4 | \n    5 | \n    6 | class IncompleteClass\n    7 |     pass",
+        "duration": 0.001
+      },
+      {
+        "step": 3,
+        "tool": "read_file",
+        "arguments": {
+          "path": "messy/notes.txt"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "文件：messy/notes.txt（共 3 行，编码 utf-8）\n\n    1 | 这是示例目录的说明文件（纯文本，不是代码）。\n    2 | 审查工具应当把它识别为 text 类型：可以被检索和阅读，但不做 AST 分析。\n    3 | FIXME: 这里也故意放一个遗留标记，用来观察规则是否会误伤文档文件。",
+        "duration": 0.001
+      },
+      {
+        "step": 3,
+        "tool": "read_file",
+        "arguments": {
+          "path": "messy/script.js"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "文件：messy/script.js（共 24 行，编码 utf-8）\n\n    1 | // 非 Python 代码也应当能被审查：确定性规则不覆盖它，由 LLM 语义分析负责\n    2 | var API_SECRET = \"js-demo-secret-123456\";\n    3 | \n    4 | function loadUser(id) {\n    5 |   if (id == null) {\n    6 |     return null;\n    7 |   }\n    8 |   if (id == undefined) {\n    9 |     return null\n   10 |   }\n   11 |   try {\n   12 |     var data = eval(\"({id: \" + id + \"})\");\n   13 |     return",
+        "duration": 0.001
+      },
+      {
+        "step": 4,
+        "tool": "analyze_python",
+        "arguments": {
+          "path": "buggy_service.py"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "{\"file\": \"buggy_service.py\", \"encoding\": \"utf-8\", \"decoded_lossy\": false, \"truncated\": false, \"parse_ok\": true, \"parse_error\": \"\", \"loc\": 190, \"classes\": 0, \"max_complexity\": 17, \"avg_complexity\": 4.7, \"functions\": [{\"name\": \"load_users\", \"line\": 19, \"length\": 16, \"complexity\": 9, \"has_docstring\": false}, {\"name\": \"read_config\", \"line\": 37, \"length\": 6, \"complexity\": 2, \"has_docstring\": false}, {\"",
+        "duration": 0.004
+      },
+      {
+        "step": 4,
+        "tool": "analyze_python",
+        "arguments": {
+          "path": "messy/legacy_gbk.py"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "{\"file\": \"messy/legacy_gbk.py\", \"encoding\": \"gb18030\", \"decoded_lossy\": false, \"truncated\": false, \"parse_ok\": true, \"parse_error\": \"\", \"loc\": 8, \"classes\": 0, \"max_complexity\": 2, \"avg_complexity\": 2.0, \"functions\": [{\"name\": \"legacy_handler\", \"line\": 3, \"length\": 6, \"complexity\": 2, \"has_docstring\": false}], \"rule_findings\": [{\"rule_id\": \"MAINT004\", \"line\": 3, \"severity\": \"info\", \"category\": \"do",
+        "duration": 0.001
+      },
+      {
+        "step": 4,
+        "tool": "analyze_python",
+        "arguments": {
+          "path": "messy/syntax_error.py"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "{\"file\": \"messy/syntax_error.py\", \"encoding\": \"utf-8\", \"decoded_lossy\": false, \"truncated\": false, \"parse_ok\": false, \"parse_error\": \"第 2 行解析失败：invalid syntax；原文：def broken_function(:\", \"loc\": 7, \"classes\": 0, \"max_complexity\": 0, \"avg_complexity\": 0.0, \"functions\": [], \"rule_findings\": [{\"rule_id\": \"SYN001\", \"line\": 2, \"severity\": \"high\", \"category\": \"bug\", \"title\": \"语法错误，无法解析\", \"detail\": \"第 2 行解",
+        "duration": 0.001
+      },
+      {
+        "step": 4,
+        "tool": "analyze_python",
+        "arguments": {
+          "path": "utils_clean.py"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "{\"file\": \"utils_clean.py\", \"encoding\": \"utf-8\", \"decoded_lossy\": false, \"truncated\": false, \"parse_ok\": true, \"parse_error\": \"\", \"loc\": 68, \"classes\": 1, \"max_complexity\": 4, \"avg_complexity\": 2.8, \"functions\": [{\"name\": \"load_users\", \"line\": 23, \"length\": 28, \"complexity\": 4, \"has_docstring\": true}, {\"name\": \"count_active\", \"line\": 53, \"length\": 3, \"complexity\": 3, \"has_docstring\": true}, {\"name\"",
+        "duration": 0.002
+      },
+      {
+        "step": 5,
+        "tool": "read_file",
+        "arguments": {
+          "path": "messy/big_generated.py",
+          "start_line": "1",
+          "max_lines": "60"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "文件：messy/big_generated.py（共 3602 行，编码 utf-8）\n当前显示第 1-60 行；如需后续内容，请带 start_line=61 再次调用。\n\n    1 | # 自动生成的文件：用于演示大文件分页读取与 STYLE003（文件过长）\n    2 | \n    3 | def generated_1(value):\n    4 |     return value + 1\n    5 | \n    6 | def generated_2(value):\n    7 |     return value + 2\n    8 | \n    9 | def generated_3(value):\n   10 |     return value + 3\n   11 | \n   12 | def generated_4(value):\n   13 |     re",
+        "duration": 0.004
+      },
+      {
+        "step": 5,
+        "tool": "search_code",
+        "arguments": {
+          "pattern": "(eval|exec|os\\.system|shell=True|pickle\\.loads|md5|assert |except\\s*:|== None|!= None)",
+          "glob": "*.py",
+          "max_results": "40"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "匹配 12 处（已扫描 5 个文件，glob=*.py）：\nbuggy_service.py:23: if user[\"age\"] == None:\nbuggy_service.py:41: except:\nbuggy_service.py:47: subprocess.run(\"echo notify \" + user, shell=True)\nbuggy_service.py:52: def evaluate(expression):\nbuggy_service.py:53: return eval(expression)\nbuggy_service.py:57: os.system(\"ping -n 1 \" + host)\nbuggy_service.py:61: return pickle.loads(blob)\nbuggy_service.py:69: if key == Non",
+        "duration": 0.012
+      },
+      {
+        "step": 6,
+        "tool": "read_file",
+        "arguments": {
+          "path": "buggy_service.py",
+          "start_line": "1",
+          "max_lines": "160"
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "文件：buggy_service.py（共 190 行，编码 utf-8）\n当前显示第 1-160 行；如需后续内容，请带 start_line=161 再次调用。\n\n    1 | # 用户服务示例：这个文件是\"能跑但问题很多\"的典型业务代码，\n    2 | # 故意写坏了，用来演示 Code Review Agent 能发现什么（每一处问题都对应报告里的规则编号）。\n    3 | import hashlib\n    4 | import json\n    5 | import os\n    6 | import pickle\n    7 | import re\n    8 | import subprocess\n    9 | import time\n   10 | \n   11 | API_KEY = \"sk-demo-1234567890abcdef\"\n   12 | DB_",
+        "duration": 0.003
+      },
+      {
+        "step": 7,
+        "tool": "submit_review",
+        "arguments": {
+          "summary": "本次审查覆盖工作区全部文件：buggy_service.py（190 行，问题集中）、utils_clean.py（干净对照）、messy/ 下的 GBK 编码文件、语法错误文件、大文件、纯文本与非 Python 脚本。整体质量：bu...",
+          "verdict": "request_changes",
+          "findings": "[{'title': '硬编码明文密钥/口令/令牌', 'file': 'buggy_service.py', 'line': 11, 'severity': 'critical', 'category': 'security', '..."
+        },
+        "ok": true,
+        "error": "",
+        "output_preview": "已接收 16 条发现。 你可以直接结束（无需再调用工具），最终报告会由系统渲染。",
+        "duration": 0.001
+      }
+    ]
+  },
+  "scan": {
+    "root": "G:\\DeepSeek工程\\code-review-agent\\examples",
+    "duration": 0.044,
+    "truncated": false,
+    "total_bytes_scanned": 72801,
+    "notes": [],
+    "skipped": [
+      {
+        "path": "G:/DeepSeek工程/code-review-agent/examples/messy/data.bin",
+        "reason": "二进制文件，跳过"
+      },
+      {
+        "path": "G:/DeepSeek工程/code-review-agent/examples/messy/empty_file.py",
+        "reason": "空文件"
+      }
+    ],
+    "stats": {
+      "files": 9,
+      "by_kind": {
+        "python": 5,
+        "binary": 1,
+        "empty": 1,
+        "text": 1,
+        "code": 1
+      },
+      "by_severity": {
+        "critical": 5,
+        "high": 6,
+        "medium": 4,
+        "low": 9,
+        "info": 42
+      }
+    },
+    "files": [
+      {
+        "path": "G:/DeepSeek工程/code-review-agent/examples/buggy_service.py",
+        "size": 5698,
+        "lines": 190,
+        "language": "Python",
+        "kind": "python",
+        "encoding": "utf-8",
+        "note": ""
+      },
+      {
+        "path": "G:/DeepSeek工程/code-review-agent/examples/messy/big_generated.py",
+        "size": 63879,
+        "lines": 3602,
+        "language": "Python",
+        "kind": "python",
+        "encoding": "utf-8",
+        "note": ""
+      },
+      {
+        "path": "G:/DeepSeek工程/code-review-agent/examples/messy/data.bin",
+        "size": 208,
+        "lines": null,
+        "language": "binary",
+        "kind": "binary",
+        "encoding": "",
+        "note": "二进制文件，跳过"
+      },
+      {
+        "path": "G:/DeepSeek工程/code-review-agent/examples/messy/empty_file.py",
+        "size": 0,
+        "lines": 0,
+        "language": "unknown",
+        "kind": "empty",
+        "encoding": "",
+        "note": "空文件"
+      },
+      {
+        "path": "G:/DeepSeek工程/code-review-agent/examples/messy/legacy_gbk.py",
+        "size": 229,
+        "lines": 8,
+        "language": "Python",
+        "kind": "python",
+        "encoding": "gb18030",
+        "note": ""
+      },
+      {
+        "path": "G:/DeepSeek工程/code-review-agent/examples/messy/notes.txt",
+        "size": 261,
+        "lines": 3,
+        "language": "Text",
+        "kind": "text",
+        "encoding": "",
+        "note": ""
+      },
+      {
+        "path": "G:/DeepSeek工程/code-review-agent/examples/messy/script.js",
+        "size": 534,
+        "lines": 24,
+        "language": "JavaScript",
+        "kind": "code",
+        "encoding": "",
+        "note": ""
+      },
+      {
+        "path": "G:/DeepSeek工程/code-review-agent/examples/messy/syntax_error.py",
+        "size": 154,
+        "lines": 7,
+        "language": "Python",
+        "kind": "python",
+        "encoding": "utf-8",
+        "note": ""
+      },
+      {
+        "path": "G:/DeepSeek工程/code-review-agent/examples/utils_clean.py",
+        "size": 1838,
+        "lines": 68,
+        "language": "Python",
+        "kind": "python",
+        "encoding": "utf-8",
+        "note": ""
+      }
+    ],
+    "findings": [
+      {
+        "title": "可变对象作为默认参数",
+        "file": "buggy_service.py",
+        "line": 19,
+        "severity": "high",
+        "category": "bug",
+        "detail": "load_users 的 `options={}, filters=[]`（第 19 行）与 run_pipeline 的 `options={}`（第 104 行）使用可变默认值。默认对象在函数定义时创建并被所有调用共享，任何一次调用对其修改都会污染后续调用，产生难以复现的串数据问题。",
+        "suggestion": "默认值改为 None，函数体内初始化：`def load_users(path, options=None, filters=None, ...): options = {} if options is None else options; filters = [] if filters is None else filters`。",
+        "evidence": "19: def load_users(path, options={}, filters=[], verbose=False, timeout=30, strict=True):\n104: def run_pipeline(path, options={}):",
+        "rule_id": "BUG003",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "357a9815a1"
+      },
+      {
+        "title": "异常被静默吞掉（except + pass）",
+        "file": "buggy_service.py",
+        "line": 48,
+        "severity": "high",
+        "category": "bug",
+        "detail": "捕获 Exception 后直接 pass/continue，异常信息被完全丢弃，出问题无法定位。",
+        "suggestion": "至少记录日志（logging.exception）或向上抛出。",
+        "evidence": "",
+        "rule_id": "BUG002",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "3f7b197ae4"
+      },
+      {
+        "title": "subprocess 使用 shell=True",
+        "file": "buggy_service.py",
+        "line": 47,
+        "severity": "critical",
+        "category": "security",
+        "detail": "notify(user) 执行 subprocess.run(\"echo notify \" + user, shell=True)。user 由外部传入，含 shell 元字符时可注入任意命令；且第 48-49 行用 except Exception: pass 吞掉所有失败，注入行为不会留下任何日志。",
+        "suggestion": "改为 `subprocess.run([\"echo\", \"notify\", user], shell=False, check=True)`；异常至少 `logging.exception(...)` 记录，不要静默 pass。",
+        "evidence": "46:     try:\n47:         subprocess.run(\"echo notify \" + user, shell=True)\n48:     except Exception:\n49:         pass",
+        "rule_id": "SEC003",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "6bea885385"
+      },
+      {
+        "title": "使用 eval/exec 执行动态代码",
+        "file": "buggy_service.py",
+        "line": 53,
+        "severity": "critical",
+        "category": "security",
+        "detail": "evaluate(expression) 直接把参数交给 eval()。只要 expression 来自请求参数、配置或数据库，攻击者即可执行任意 Python 代码（如 __import__('os').system(...)），等价于 RCE。",
+        "suggestion": "若只需解析字面量，改用 `ast.literal_eval(expression)`；若需表达式求值，使用受限的解析器（如 ast 白名单节点）或显式映射表，禁止直接 eval。",
+        "evidence": "52: def evaluate(expression):\n53:     return eval(expression)",
+        "rule_id": "SEC002",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "ff2c6cfb6c"
+      },
+      {
+        "title": "os.system 直接执行字符串命令",
+        "file": "buggy_service.py",
+        "line": 57,
+        "severity": "critical",
+        "category": "security",
+        "detail": "ping(host) 使用 os.system(\"ping -n 1 \" + host)。host 若含 `; rm -rf /` 或 `& whoami` 等字符，会被 shell 解释执行，形成命令注入；同时 os.system 无法获取返回码与输出。",
+        "suggestion": "改用 `subprocess.run([\"ping\", \"-n\", \"1\", host], shell=False, check=True, capture_output=True)`，并对 host 做白名单校验（如仅允许 IP/域名正则）。",
+        "evidence": "56: def ping(host):\n57:     os.system(\"ping -n 1 \" + host)",
+        "rule_id": "SEC004",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "9c6bea1ef3"
+      },
+      {
+        "title": "可变对象作为默认参数",
+        "file": "buggy_service.py",
+        "line": 104,
+        "severity": "high",
+        "category": "bug",
+        "detail": "函数 run_pipeline 使用可变对象作为默认参数，该对象在多次调用间共享，容易被意外修改。",
+        "suggestion": "默认值改用 None，函数体内再 `if param is None: param = []`。",
+        "evidence": "",
+        "rule_id": "BUG003",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "5056d40032"
+      },
+      {
+        "title": "疑似硬编码密钥/口令",
+        "file": "buggy_service.py",
+        "line": 11,
+        "severity": "critical",
+        "category": "security",
+        "detail": "第 11-13 行将 API_KEY=\"sk-demo-1234567890abcdef\"、DB_PASSWORD=\"P@ssw0rd123\"、ADMIN_TOKEN=\"token-demo-abcdef123456\" 明文写入源码。任何能读取仓库的人（含 CI 日志、镜像层、git 历史）都能获得凭据，且一旦提交即长期泄露。",
+        "suggestion": "改为从环境变量或密钥管理服务读取，例如 `API_KEY = os.environ[\"API_KEY\"]`（缺失时启动即失败）；同时轮换这三个已泄露的凭据并从 git 历史中清理。",
+        "evidence": "API_KEY=***",
+        "rule_id": "SEC001",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "9104d18ba0"
+      },
+      {
+        "title": "裸 except 捕获所有异常",
+        "file": "buggy_service.py",
+        "line": 41,
+        "severity": "high",
+        "category": "bug",
+        "detail": "read_config 用 `except:` 捕获一切并返回 {}。这会连 KeyboardInterrupt/SystemExit 一起吞掉，且配置读取失败（文件不存在、JSON 损坏、权限不足）被伪装成「空配置」，故障完全不可见。",
+        "suggestion": "改为 `except (OSError, json.JSONDecodeError) as exc: logging.warning(\"read_config failed: %s\", exc); return {}`，只捕获预期异常并记录日志。",
+        "evidence": "37: def read_config(path):\n38:     try:\n39:         with open(path) as handle:\n40:             return json.load(handle)\n41:     except:\n42:         return {}",
+        "rule_id": "BUG001",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "9b6d76fc24"
+      },
+      {
+        "title": "不安全的反序列化（pickle/yaml.load）",
+        "file": "buggy_service.py",
+        "line": 61,
+        "severity": "critical",
+        "category": "security",
+        "detail": "restore_session(blob) 直接 pickle.loads(blob)。pickle 在反序列化时会执行 __reduce__ 指定的可调用对象，若 blob 来自客户端 cookie/session，攻击者可构造恶意 payload 实现 RCE。",
+        "suggestion": "改用 JSON 等安全格式；若必须保留对象结构，使用带签名校验的序列化（如 itsdangerous 签名 + json），并在反序列化前验证来源与完整性。",
+        "evidence": "60: def restore_session(blob):\n61:     return pickle.loads(blob)",
+        "rule_id": "SEC005",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "db2bb414ff"
+      },
+      {
+        "title": "圈复杂度过高",
+        "file": "buggy_service.py",
+        "line": 104,
+        "severity": "medium",
+        "category": "maintainability",
+        "detail": "run_pipeline 圈复杂度约 17（阈值 10）、长度 50 行，最深处有 6 层 if 嵌套（112-126 行），且第 108-135 与 136-151 两段循环逻辑高度重复。代码中已有 `# TODO: 这里的分支太多，需要重构` 自认。此类结构极易在修改时引入分支遗漏。",
+        "suggestion": "用早返回（guard clause）打平嵌套，并把「判断单个用户是否计入 loaded/skipped/errors」抽成独立函数（如 `classify_user(user, config) -> str`），两个循环合并为一次遍历。",
+        "evidence": "104: def run_pipeline(path, options={}):\n105:     # TODO: 这里的分支太多，需要重构\n...\n112-126: if/if/if/if/if 六层嵌套",
+        "rule_id": "MAINT002",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "74c485925d"
+      },
+      {
+        "title": "修改正在遍历的列表/字典",
+        "file": "buggy_service.py",
+        "line": 189,
+        "severity": "high",
+        "category": "bug",
+        "detail": "purge_inactive 在 `for user in users:` 循环体内调用 `users.remove(user)`，会改变正在遍历的容器：相邻的 inactive 元素会被跳过（漏删），且语义上属于未定义行为。",
+        "suggestion": "改为遍历副本或重建列表：`return [u for u in users if u.get(\"active\")]`；若必须原地修改，用 `users[:] = [u for u in users if u.get(\"active\")]`。",
+        "evidence": "186: def purge_inactive(users):\n187:     for user in users:\n188:         if not user.get(\"active\"):\n189:             users.remove(user)",
+        "rule_id": "BUG006",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "c83d535a66"
+      },
+      {
+        "title": "参数过多",
+        "file": "buggy_service.py",
+        "line": 19,
+        "severity": "low",
+        "category": "maintainability",
+        "detail": "函数 load_users 有 6 个参数，调用方容易传错。",
+        "suggestion": "把相关参数聚合为 dataclass / 配置对象。",
+        "evidence": "",
+        "rule_id": "MAINT003",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "83dc287a17"
+      },
+      {
+        "title": "使用 == None 比较",
+        "file": "buggy_service.py",
+        "line": 23,
+        "severity": "medium",
+        "category": "bug",
+        "detail": "`data = json.load(open(path))` 未使用 with 语句，文件对象依赖 GC 回收。在 CPython 之外或异常路径下句柄可能长时间不释放，批量调用会耗尽文件描述符。",
+        "suggestion": "改为 `with open(path, encoding=\"utf-8\") as handle: data = json.load(handle)`。",
+        "evidence": "20:     data = json.load(open(path))",
+        "rule_id": "BUG004",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "3858de5483"
+      },
+      {
+        "title": "变量名遮蔽内置函数",
+        "file": "buggy_service.py",
+        "line": 64,
+        "severity": "low",
+        "category": "maintainability",
+        "detail": "参数名 'list' 遮蔽了内置名，函数体内将无法直接调用同名内置函数。",
+        "suggestion": "改名为 list_value 之类的非内置名。",
+        "evidence": "",
+        "rule_id": "MAINT008",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "c0c1c63cb1"
+      },
+      {
+        "title": "使用 == None 比较",
+        "file": "buggy_service.py",
+        "line": 69,
+        "severity": "low",
+        "category": "bug",
+        "detail": "与 None 比较应使用 is / is not；== 依赖对象的 __eq__ 实现，可能被重载。",
+        "suggestion": "改为 `is None` 或 `is not None`。",
+        "evidence": "",
+        "rule_id": "BUG004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "45feb2cd4f"
+      },
+      {
+        "title": "assert 用于输入校验",
+        "file": "buggy_service.py",
+        "line": 84,
+        "severity": "medium",
+        "category": "bug",
+        "detail": "verify_user 用 `assert user_id` 校验入参。生产环境常以 `python -O` 运行，assert 会被整体移除，校验随之消失，user_id 为 None 时会继续执行到 data.get(None) 产生错误行为。",
+        "suggestion": "改为显式校验：`if not user_id: raise ValueError(\"user_id is required\")`。",
+        "evidence": "83: def verify_user(user_id, data):\n84:     assert user_id",
+        "rule_id": "SEC006",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "c3808b71aa"
+      },
+      {
+        "title": "使用 == None 比较",
+        "file": "buggy_service.py",
+        "line": 86,
+        "severity": "low",
+        "category": "bug",
+        "detail": "与 None 比较应使用 is / is not；== 依赖对象的 __eq__ 实现，可能被重载。",
+        "suggestion": "改为 `is None` 或 `is not None`。",
+        "evidence": "",
+        "rule_id": "BUG004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "3840076bcc"
+      },
+      {
+        "title": "函数过长",
+        "file": "buggy_service.py",
+        "line": 104,
+        "severity": "low",
+        "category": "maintainability",
+        "detail": "函数 run_pipeline 有 50 行（阈值 40 行），职责可能过多。",
+        "suggestion": "按「取数据/算逻辑/写输出」拆分出小函数，或抽成类。",
+        "evidence": "",
+        "rule_id": "MAINT001",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "574b775ef5"
+      },
+      {
+        "title": "调试用 print 语句",
+        "file": "buggy_service.py",
+        "line": 152,
+        "severity": "low",
+        "category": "maintainability",
+        "detail": "使用 print 直接输出：库代码里难以按级别过滤，也不利于线上排查。",
+        "suggestion": "库代码改用 logging.getLogger(__name__)；命令行脚本可忽略本提示。",
+        "evidence": "",
+        "rule_id": "MAINT009",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "ab71332e3d"
+      },
+      {
+        "title": "参数过多",
+        "file": "buggy_service.py",
+        "line": 170,
+        "severity": "low",
+        "category": "maintainability",
+        "detail": "函数 format_user 有 7 个参数，调用方容易传错。",
+        "suggestion": "把相关参数聚合为 dataclass / 配置对象。",
+        "evidence": "",
+        "rule_id": "MAINT003",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "2c072423f2"
+      },
+      {
+        "title": "用 type() == 判断类型",
+        "file": "buggy_service.py",
+        "line": 67,
+        "severity": "low",
+        "category": "bug",
+        "detail": "type(x) == T 不识别子类，也不是多态友好的判断方式。",
+        "suggestion": "改用 isinstance(x, T)。",
+        "evidence": "",
+        "rule_id": "BUG005",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "ba59b7a592"
+      },
+      {
+        "title": "未使用的导入",
+        "file": "buggy_service.py",
+        "line": 9,
+        "severity": "low",
+        "category": "maintainability",
+        "detail": "导入了 time 但未使用（import time）。",
+        "suggestion": "删除该导入，或确认是否漏用了本应调用的函数。",
+        "evidence": "",
+        "rule_id": "MAINT006",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "c7d24bcbb9"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 19,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 load_users 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "7d465b702e"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 37,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 read_config 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "78922f0c98"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 45,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 notify 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "56ed4ba785"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 52,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 evaluate 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "0d69e2e2ab"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 56,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 ping 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "10a36e11fb"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 60,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 restore_session 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "fe3361aaaf"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 64,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 summarize 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "8c72446056"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "buggy_service.py",
+        "line": 83,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 verify_user 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "631e090ed1"
+      },
+      {
+        "title": "该文件问题较多，已折叠",
+        "file": "buggy_service.py",
+        "line": null,
+        "severity": "info",
+        "category": "other",
+        "detail": "另有 8 条低优先级问题未在报告正文展开（可用 scan 子命令查看完整明细）。",
+        "suggestion": "建议先修高危问题，再批量跑格式化工具处理风格问题。",
+        "evidence": "",
+        "rule_id": "LIMIT001",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "9cacc6377b"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 3,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_1 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "9ded91b6fe"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 6,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_2 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "4a33397b99"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 9,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_3 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "bc0d8580f4"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 12,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_4 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "bd7e91b3f8"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 15,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_5 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "ff821a5c7f"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 18,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_6 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "99f026fd35"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 21,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_7 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "b2d4c58a68"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 24,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_8 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "0c3bf0e4ce"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 27,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_9 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "30264be284"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 30,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_10 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "05b3ef5b53"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 33,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_11 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "8321d41728"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 36,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_12 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "63d2579775"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 39,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_13 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "a6ccfe910c"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 42,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_14 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "2cebf725a8"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 45,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_15 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "2f2497849b"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 48,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_16 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "c350a52eee"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 51,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_17 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "9efcb97945"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 54,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_18 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "09a1f46d5d"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 57,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_19 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "8ae5fabfe7"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 60,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_20 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "cbccce1fc4"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 63,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_21 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "b5a1502c6b"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 66,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_22 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "3dee9186bc"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 69,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_23 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "959f7b23b7"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 72,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_24 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "e619f034da"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 75,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_25 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "61c47a895d"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 78,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_26 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "933d408770"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 81,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_27 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "2e8099b661"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 84,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_28 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "768d353d46"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 87,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_29 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "1e4d6e851b"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/big_generated.py",
+        "line": 90,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 generated_30 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "e1f9a8cb52"
+      },
+      {
+        "title": "该文件问题较多，已折叠",
+        "file": "messy/big_generated.py",
+        "line": null,
+        "severity": "info",
+        "category": "other",
+        "detail": "另有 1172 条低优先级问题未在报告正文展开（可用 scan 子命令查看完整明细）。",
+        "suggestion": "建议先修高危问题，再批量跑格式化工具处理风格问题。",
+        "evidence": "",
+        "rule_id": "LIMIT001",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "c4e963315c"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/legacy_gbk.py",
+        "line": 3,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "公开函数 legacy_handler 缺少文档字符串。",
+        "suggestion": "用一行说明「做什么、参数含义、返回什么」。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "a7f2563a18"
+      },
+      {
+        "title": "裸 except 捕获所有异常",
+        "file": "messy/legacy_gbk.py",
+        "line": 7,
+        "severity": "medium",
+        "category": "bug",
+        "detail": "legacy_handler 用 `except:` 捕获一切并返回 ''。解码失败（非法字节、类型错误）与 KeyboardInterrupt 被同等对待，调用方无法区分「空数据」与「解码失败」，问题被静默掩盖。",
+        "suggestion": "改为 `except (UnicodeDecodeError, AttributeError) as exc: logging.warning(...); return ''`，或让异常向上抛出由调用方决定降级策略。",
+        "evidence": "5:     try:\n6:         return payload.decode('gbk')\n7:     except:\n8:         return ''",
+        "rule_id": "BUG001",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "f35aec45e0"
+      },
+      {
+        "title": "缺少文档字符串",
+        "file": "messy/legacy_gbk.py",
+        "line": 1,
+        "severity": "info",
+        "category": "documentation",
+        "detail": "模块缺少文档字符串，阅读者无法快速了解文件用途。",
+        "suggestion": "在文件开头用三引号写一句模块职责说明。",
+        "evidence": "",
+        "rule_id": "MAINT004",
+        "source": "rule",
+        "sources": [
+          "rule"
+        ],
+        "confidence": 1.0,
+        "id": "30f883c770"
+      },
+      {
+        "title": "语法错误，无法解析",
+        "file": "messy/syntax_error.py",
+        "line": 2,
+        "severity": "high",
+        "category": "bug",
+        "detail": "第 2 行 `def broken_function(:` 缺少参数列表右括号，第 6 行 `class IncompleteClass` 缺少冒号，文件无法解析（parse_ok=false）。该文件无法被导入、测试或静态分析，若被其他模块 import 会导致整个进程启动失败。",
+        "suggestion": "修正为 `def broken_function():` 与 `class IncompleteClass:`；建议在 CI 中加入 `python -m compileall` 或 ruff/flake8 语法检查作为门禁，防止此类文件进入主干。",
+        "evidence": "parse_error: 第 2 行解析失败：invalid syntax；原文：def broken_function(:",
+        "rule_id": "SYN001",
+        "source": "rule+agent",
+        "sources": [
+          "rule",
+          "agent"
+        ],
+        "confidence": 1.0,
+        "id": "eca41271d2"
+      }
+    ]
+  },
+  "config": {
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-chat",
+    "temperature": 0.2,
+    "timeout": 60.0,
+    "max_retries": 3,
+    "retry_base_delay": 1.5,
+    "max_tokens": 4096,
+    "transport": "http",
+    "max_steps": 8,
+    "offline": false,
+    "focus": [],
+    "language": "zh",
+    "max_files": 200,
+    "max_file_bytes": 200000,
+    "max_total_bytes": 6000000,
+    "max_read_lines": 400,
+    "max_findings_per_file": 30,
+    "max_findings": 300,
+    "include": [],
+    "exclude": [],
+    "ignore_dirs": [
+      ".git",
+      ".hg",
+      ".svn",
+      ".idea",
+      ".vscode",
+      ".vs",
+      "__pycache__",
+      ".mypy_cache",
+      ".pytest_cache",
+      ".ruff_cache",
+      ".tox",
+      ".venv",
+      "venv",
+      "env",
+      "node_modules",
+      "bower_components",
+      "dist",
+      "build",
+      "target",
+      "out",
+      ".next",
+      ".nuxt",
+      "coverage",
+      "htmlcov",
+      ".cra_sessions",
+      ".dsh",
+      "site-packages",
+      ".cache",
+      "vendor"
+    ],
+    "ignore_globs": [
+      "*.min.js",
+      "*.min.css",
+      "*.map",
+      "*.lock",
+      "package-lock.json",
+      "*.pyc",
+      "*.pyo",
+      "*.so",
+      "*.dll",
+      "*.exe",
+      "*.zip",
+      "*.tar",
+      "*.gz",
+      "*.whl",
+      "*.jpg",
+      "*.jpeg",
+      "*.png",
+      "*.gif",
+      "*.ico",
+      "*.pdf",
+      "*.mp4"
+    ],
+    "follow_symlinks": false,
+    "verbose": false,
+    "color": true,
+    "trace": true,
+    "extra": {}
+  }
+}

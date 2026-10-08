@@ -1,0 +1,27 @@
+# 统一行尾，避免在 Windows/Linux/macOS 之间来回 checkout 时产生无意义 diff
+* text=auto
+
+# 源码与文档：统一 LF
+*.py    text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.js    text eol=lf
+*.txt   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.toml  text eol=lf
+requirements.txt text eol=lf
+.gitignore       text eol=lf
+.gitattributes   text eol=lf
+
+# Windows 批处理必须是 CRLF（且本仓库的 .cmd 保持纯 ASCII）
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
+# 二进制：不要做任何转换
+*.bin  binary
+*.png  binary
+*.jpg  binary
+*.pdf  binary

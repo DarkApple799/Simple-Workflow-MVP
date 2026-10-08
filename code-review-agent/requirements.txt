@@ -1,0 +1,9 @@
+# 本项目核心功能零第三方依赖，只使用 Python 3.9+ 标准库。
+# 因此本文件默认没有必须安装的包：直接 `python review.py <路径>` 即可运行。
+#
+# 之所以不依赖 LangChain 等框架：作业允许使用 LLM 原生 API，
+# 而原生实现能让 Agent 循环、工具调用协议、重试与降级策略完全可见、可控、可测试。
+#
+# 如果你想改用官方 SDK 传输层（可选，非必需）：
+#   pip install openai
+# 安装后在 .env 中设置 CRA_TRANSPORT=sdk 即可切换（见 cra/llm.py）。

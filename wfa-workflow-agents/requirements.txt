@@ -1,0 +1,9 @@
+# wfa 所需依赖：**零第三方必需依赖**（仅使用 Python 标准库，Python 3.9+）。
+#
+# 之所以这样设计（与 Homework1 保持一致）：
+#   1. 评审/演示时不需要 pip install 任何东西，clone 下来就能跑；
+#   2. LLM 调用通过标准库 urllib 直接对接 OpenAI 兼容协议；
+#   3. 离线模式下有确定性规则引擎 + 模板模型，没有网络与 Key 也能完整跑通流程。
+#
+# 可选依赖（仅当你想用官方 SDK 作为传输层时）：
+#   pip install openai      # 然后在 .env 中设置 WFA_TRANSPORT=sdk
